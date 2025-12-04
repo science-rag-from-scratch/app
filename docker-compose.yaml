@@ -1,3 +1,5 @@
+name: science-rag
+
 services:
   db:
     image: pgvector/pgvector:pg16
