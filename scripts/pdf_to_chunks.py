@@ -77,12 +77,12 @@ async def main():
     processor = PDFProcessor()
     df = pd.read_parquet(ARXIV_META_PATH)
     df['pdf_path'] = df['pdf_path'].apply(lambda x: PDF_OUT_PATH / os.path.basename(x))
-    df['text'] = df['pdf_path'].apply(lambda path: processor.pdf_to_text(path))
-    for row in tqdm(df.itertuples(), desc="all papers"):
+    # df['text'] = df['pdf_path'].apply(lambda path: processor.pdf_to_text(path))
+    for idx, row in tqdm(df.iterrows(), desc="all papers"):
         save_paper_meta(
             arxiv_id=row['arxiv_id'],
             paper_name=row['paper_name'],
-            pub_year=row['pub_year'],
+            pub_year=row['year'],
             main_category=row['main_category'],
             subcategory=row['subcategory'],
         )
