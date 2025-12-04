@@ -7,6 +7,7 @@ import dotenv
 import psycopg2
 import asyncio
 import pandas as pd
+from tqdm import tqdm
 from loguru import logger
 from app.src.processing import PDFProcessor
 
@@ -27,12 +28,47 @@ conn = psycopg2.connect(
 
 cur = conn.cursor()
 
-def save_chunk(doc_id, chunk_id, text, metadata = {}):
+
+def save_paper_meta(
+    arxiv_id: str,
+    paper_name: str,
+    pub_year: int,
+    main_category: str,
+    subcategory: str,
+):
     cur.execute(
         """
-        INSERT INTO CTO (doc_id, chunk_id, content, embedding, metadata) VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO documents_meta (
+            arxiv_id,
+            paper_name,
+            pub_year,
+            main_category,
+            subcategory
+        ) VALUES (%s, %s, %s, %s, %s)
         """,
-        (doc_id, chunk_id, text, emb.tolist(), json.dumps(metadata))
+        (arxiv_id, paper_name, pub_year, main_category, subcategory)
+    )
+    conn.commit()
+
+
+def save_chunk(
+    arxiv_id: str,
+    chunk_id: int,
+    text: str,
+    embeddings: list[float],
+    metadata = {}
+):
+    cur.execute(
+        """
+        INSERT INTO documents (
+            arxiv_id,
+            chunk_id,
+            content,
+            embedding,
+            metadata
+        ) VALUES (%s, %s, %s, %s, %s)
+        """,
+        (arxiv_id, chunk_id, text, embeddings, json.dumps(metadata))
     )
     conn.commit()
 
@@ -41,16 +77,22 @@ async def main():
     processor = PDFProcessor()
     df = pd.read_parquet(ARXIV_META_PATH)
     df['text'] = df['pdf_path'].apply(lambda path: processor.pdf_to_text(path))
-    chunked_texts = []
-    for arxiv_id, text in df[['arxiv_id', 'text']].itertuples(index=False):
-        chunks = processor.chunk_text(text)
-        for idx, chunk in enumerate(chunks):
-            chunked_texts.append({
-                'arxiv_id': arxiv_id,
-                'chunk_id': idx,
-                'text': chunk,
-                "embedding": processor.embed_text(chunk).tolist(),
-            })
+    for row in tqdm(df.itertuples(), desc="all papers"):
+        save_paper_meta(
+            arxiv_id=row['arxiv_id'],
+            paper_name=row['paper_name'],
+            pub_year=row['pub_year'],
+            main_category=row['main_category'],
+            subcategory=row['subcategory'],
+        )
+        chunks = processor.chunk_text(row['text'])
+        for idx, chunk in tqdm(enumerate(chunks), desc="chunks"):
+            save_chunk(
+                arxiv_id=row['arxiv_id'],
+                chunk_id=idx,
+                text=chunk,
+                embeddings=processor.embed_text(chunk).tolist(),
+            )
 
 
 if __name__ == "__main__":
