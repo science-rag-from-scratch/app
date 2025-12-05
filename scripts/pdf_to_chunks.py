@@ -77,8 +77,14 @@ async def main():
     processor = PDFProcessor()
     df = pd.read_parquet(ARXIV_META_PATH)
 
+    valid_files = [os.path.basename(i) for i in os.listdir(PDF_OUT_PATH)]
+    valid_arxiv_ids = [os.path.splitext(i)[0] for i in valid_files]
+
+    df = df[df['arxiv_id'].isin(valid_arxiv_ids)]
+
     # tmp for quick demo
-    df = df.sample(100)
+    if df.shape[0] > 100:
+        df = df.sample(100)
 
     df['pdf_path'] = df['pdf_path'].apply(lambda x: PDF_OUT_PATH / os.path.basename(x))
     df['text'] = df['pdf_path'].apply(lambda path: processor.pdf_to_text(path))
