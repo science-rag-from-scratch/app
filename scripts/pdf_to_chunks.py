@@ -78,7 +78,7 @@ async def main():
     df = pd.read_parquet(ARXIV_META_PATH)
 
     # tmp for quick demo
-    df = df.sample(500)
+    df = df.sample(100)
 
     df['pdf_path'] = df['pdf_path'].apply(lambda x: PDF_OUT_PATH / os.path.basename(x))
     df['text'] = df['pdf_path'].apply(lambda path: processor.pdf_to_text(path))
@@ -91,14 +91,19 @@ async def main():
             main_category=row['main_category'],
             subcategory=row['subcategory'],
         )
-        chunks = processor.chunk_text(row['text'])
-        for idx, chunk in tqdm(enumerate(chunks), desc="chunks"):
-            save_chunk(
-                arxiv_id=row['arxiv_id'],
-                chunk_id=idx,
-                text=chunk,
-                embeddings=processor.embed_text(chunk).tolist(),
-            )
+        try:
+            chunks = processor.chunk_text(row['text'])
+            for idx, chunk in tqdm(enumerate(chunks), desc="chunks"):
+                save_chunk(
+                    arxiv_id=row['arxiv_id'],
+                    chunk_id=idx,
+                    text=chunk,
+                    embeddings=processor.embed_text(chunk).tolist(),
+                )
+        except Exception as e:
+            logger.error(f"Cannot make chunks: {e}")
+            continue
+
 
 
 if __name__ == "__main__":
