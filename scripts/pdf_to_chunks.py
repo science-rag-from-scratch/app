@@ -82,14 +82,10 @@ async def main():
 
     df = df[df['arxiv_id'].isin(valid_arxiv_ids)]
 
-    # tmp for quick demo
-    if df.shape[0] > 100:
-        df = df.sample(100)
-
-    df['pdf_path'] = df['pdf_path'].apply(lambda x: PDF_OUT_PATH / os.path.basename(x))
-    df['text'] = df['pdf_path'].apply(lambda path: processor.pdf_to_text(path))
-
     for idx, row in tqdm(df.iterrows(), desc="all papers"):
+        pdf_path = PDF_OUT_PATH / os.path.basename(row['pdf_path'])
+        text = processor.pdf_to_text(pdf_path)
+
         save_paper_meta(
             arxiv_id=row['arxiv_id'],
             paper_name=row['paper_name'],
@@ -98,7 +94,7 @@ async def main():
             subcategory=row['subcategory'],
         )
         try:
-            chunks = processor.chunk_text(row['text'])
+            chunks = processor.chunk_text(text)
             for idx, chunk in tqdm(enumerate(chunks), desc="chunks"):
                 save_chunk(
                     arxiv_id=row['arxiv_id'],
