@@ -81,20 +81,26 @@ async def main():
     valid_arxiv_ids = [os.path.splitext(i)[0] for i in valid_files]
 
     df = df[df['arxiv_id'].isin(valid_arxiv_ids)]
-
+    success = []
     for idx, row in tqdm(df.iterrows(), desc="all papers"):
-        pdf_path = PDF_OUT_PATH / os.path.basename(row['pdf_path'])
-        text = processor.pdf_to_text(pdf_path)
-
-        save_paper_meta(
-            arxiv_id=row['arxiv_id'],
-            paper_name=row['paper_name'],
-            pub_year=row['year'],
-            main_category=row['main_category'],
-            subcategory=row['subcategory'],
-        )
         try:
+            pdf_path = PDF_OUT_PATH / os.path.basename(row['pdf_path'])
+            text = processor.pdf_to_text(pdf_path)
+            logger.info("parsed pdf")
+
+            save_paper_meta(
+                arxiv_id=row['arxiv_id'],
+                paper_name=row['paper_name'],
+                pub_year=row['year'],
+                main_category=row['main_category'],
+                subcategory=row['subcategory'],
+            )
+            logger.info("saved meta")
+
             chunks = processor.chunk_text(text)
+
+            logger.info("chunked doc")
+
             for idx, chunk in tqdm(enumerate(chunks), desc="chunks"):
                 save_chunk(
                     arxiv_id=row['arxiv_id'],
@@ -102,9 +108,18 @@ async def main():
                     text=chunk,
                     embeddings=processor.embed_text(chunk).tolist(),
                 )
+            logger.info("saved chunks")
+            success.append(row['arxiv_id'])
         except Exception as e:
-            logger.error(f"Cannot make chunks: {e}")
+            logger.error(f"Cannot make process document: {e}")
             continue
+
+    try:
+        with open("success_docs.json", "w") as f:
+            json.dump(success, f)
+    except Exception as e:
+        logger.error(f"Cannot save success docs: {e}")
+        print(success)
 
 
 
