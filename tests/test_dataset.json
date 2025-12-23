@@ -1,0 +1,52 @@
+[
+    {
+        "query": "What is the attention mechanism in transformer models?",
+        "ground_truth": "The attention mechanism in transformer models computes weighted interactions between all tokens in an input sequence, allowing each token to dynamically attend to other relevant tokens when forming its representation. This is typically implemented as scaled dot-product self-attention using queries, keys, and values, enabling the model to capture contextual relationships and long-range dependencies without relying on recurrence.",
+        "category": "natural language processing"
+    },
+    {
+        "query": "How do graph neural networks aggregate information from neighbors?",
+        "ground_truth": "Graph neural networks aggregate information through an iterative message-passing framework in which each node collects messages derived from its neighboring nodes’ features and graph structure. These messages are combined using permutation-invariant functions such as sum, mean, max, or attention-based mechanisms, followed by a learnable update function to produce updated node representations.",
+        "category": "graph neural networks"
+    },
+    {
+        "query": "What is the difference between supervised and unsupervised learning?",
+        "ground_truth": "Supervised learning trains models using labeled input-output pairs, enabling the model to learn an explicit mapping and make predictions on new data. In contrast, unsupervised learning operates on unlabeled data and aims to discover underlying structure, such as clusters, latent factors, or data distributions, without predefined target labels.",
+        "category": "machine learning"
+    },
+    {
+        "query": "How does backpropagation work in neural networks?",
+        "ground_truth": "Backpropagation is an optimization algorithm that computes gradients of the loss function with respect to each network parameter by applying the chain rule of calculus. Starting from the output layer, error signals are propagated backward through the network, allowing each weight to be updated in proportion to its contribution to the final prediction error.",
+        "category": "deep learning"
+    },
+    {
+        "query": "What are the main components of a convolutional neural network?",
+        "ground_truth": "A convolutional neural network is composed of convolutional layers that apply learnable filters to extract local spatial features, non-linear activation functions, and pooling or downsampling layers to reduce spatial resolution. These are typically followed by fully connected layers or global pooling layers that integrate learned features for tasks such as classification or regression.",
+        "category": "computer vision"
+    },
+    {
+        "query": "What is reinforcement learning and how does it differ from supervised learning?",
+        "ground_truth": "Reinforcement learning is a paradigm in which an agent learns a policy by interacting with an environment, taking actions, and receiving scalar reward signals that may be delayed. Unlike supervised learning, which relies on labeled examples, reinforcement learning focuses on sequential decision-making, balancing exploration and exploitation to maximize cumulative reward over time.",
+        "category": "reinforcement learning"
+    },
+    {
+        "query": "How do distributed systems handle consistency?",
+        "ground_truth": "Distributed systems handle consistency by adopting formal consistency models that define how and when updates become visible across nodes, such as strong, eventual, or causal consistency. These guarantees are enforced using coordination mechanisms like consensus algorithms, replication protocols, and conflict resolution strategies, often trading off consistency, availability, and partition tolerance.",
+        "category": "distributed systems"
+    },
+    {
+        "query": "What is the purpose of batch normalization in deep learning?",
+        "ground_truth": "Batch normalization stabilizes and accelerates training by normalizing layer activations using statistics computed over mini-batches. By reducing sensitivity to parameter initialization and mitigating shifting activation distributions, it enables higher learning rates, improves gradient flow, and often acts as a form of regularization during training.",
+        "category": "deep learning"
+    },
+    {
+        "query": "How do transformer models process sequences in parallel?",
+        "ground_truth": "Transformer models process sequences in parallel by applying self-attention to all tokens at once, rather than iterating sequentially as in recurrent models. Positional encodings are added to token embeddings to preserve order information, allowing the model to compute contextualized representations for the entire sequence simultaneously and efficiently on parallel hardware.",
+        "category": "natural language processing"
+    },
+    {
+        "query": "What are the advantages of using residual connections in neural networks?",
+        "ground_truth": "Residual connections introduce shortcut paths that allow information and gradients to bypass one or more layers, alleviating vanishing gradient problems. This enables stable training of very deep networks, encourages learning of incremental feature refinements, and often improves convergence speed and overall model performance.",
+        "category": "deep learning"
+    }
+]

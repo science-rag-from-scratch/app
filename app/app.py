@@ -1,11 +1,29 @@
+import asyncio
+from datetime import datetime
 import json
+import os
+import time
+from typing import Optional
+from urllib.parse import quote
+from uuid import uuid4
+
+import chainlit as cl
+from chainlit.context import context
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from chainlit.element import File
+from chainlit.server import app
+from chainlit.types import ThreadDict
 import psycopg2
+from starlette.routing import Mount
+from starlette.staticfiles import StaticFiles
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, BitsAndBytesConfig
-from datetime import datetime
-from typing import Optional
-
+from transformers import (
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 
 # ------------------------
 # Config
@@ -14,6 +32,8 @@ DB_CONN = "dbname=postgres user=postgres password=postgres host=77.234.216.102"
 EMB_MODEL_PATH = "/models/multilingual-e5-large-instruct/snapshots/274baa43b0e13e37fafa6428dbc7938e62e5c439"
 LLM_MODEL_PATH = "/models/models--mistralai--Mistral-7B-Instruct-v0.3/snapshots/0d4b76e1efeb5eb6f6b5e757c79870472e04bd3a"
 TOP_K = 9
+
+inference_semaphore = asyncio.Semaphore(1)
 
 # ------------------------
 # Models
@@ -46,6 +66,13 @@ def get_db_connection():
 # Embedding helpers
 # ------------------------
 MAX_LENGTH = 512
+
+# ------------------------
+# app
+# ------------------------
+
+# app.router.routes.insert(0, Mount("/docs", app=StaticFiles(directory=DOCS), name="docs"))
+
 
 def average_pool(last_hidden_states, attention_mask):
     mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_states.size()).float()
@@ -290,3 +317,145 @@ def load_chat_history(thread_id: str, max_pairs: int = 20):
     finally:
         cur.close()
         conn.close()
+
+@cl.data_layer
+def get_data_layer():
+    return SQLAlchemyDataLayer(
+        conninfo=CHAINLIT_CONN
+    )
+
+def get_attr(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+@cl.on_chat_start
+async def start_chat():
+    torch.cuda.empty_cache()
+
+@cl.password_auth_callback
+async def on_login(username: str, password: str) -> Optional[cl.User]:
+    try:
+        conn = psycopg2.connect(DB_CONN)
+        cur = conn.cursor()
+        cur.execute("SELECT id, identifier, metadata FROM users WHERE metadata->>'username' = %s;", (username,))
+        row = cur.fetchone()
+        if row:
+            user_id, identifier, metadata = row
+            if metadata.get("password") == password:
+                return cl.User(identifier=identifier, display_name=metadata.get("display_name"), metadata={"username":metadata.get("username"), "password":metadata.get("password"), "access":metadata.get("access"), "display_name":metadata.get("display_name")})
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+    return None
+
+# ------------------------
+# Chainlit core
+# ------------------------
+async def run_with_dots(
+    message: cl.Message,
+    base_text: str,
+    task: asyncio.Task,
+    dots_interval: float=0.6,
+    max_dots: int=3):
+    dots = ""
+    while not task.done():
+        dots = "." * (len(dots)%max_dots+1)
+        message.content = f"{base_text}{dots}"
+        await message.update()
+        await asyncio.sleep(dots_interval)
+    return await task
+
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    start_time = time.time()
+
+    msg = await cl.Message(content="⌛ Ваш запрос в очереди на исполнение. Пожалуйста, подождите...", author="Assistant").send()
+    thread_id = cl.context.session.thread_id
+    chat_history = load_chat_history(thread_id, max_pairs = 20)
+    print(chat_history)
+    loop = asyncio.get_event_loop()
+
+    try:
+        # Рефразирование вопроса с учетом истории
+        old_q = message.content
+        async with inference_semaphore:
+            if chat_history:
+                rephrase_task = loop.run_in_executor(None, rephrase_question, message.content, chat_history)
+                new_question = await run_with_dots(msg, "♻️ Формирую запрос", rephrase_task)
+                rephrased_q = new_question
+            else:
+                msg.content = "⌛ Ваш запрос в очереди на исполнение. Пожалуйста, подождите..."
+                await msg.update()
+                new_question = message.content
+                rephrased_q = None
+
+        # Поиск релевантного контекста
+        async with inference_semaphore:
+            search_task = loop.run_in_executor(None, search_context, new_question)
+            context_chunks = await run_with_dots(msg, "🔍 Ищу релевантные документы", search_task)
+        if not context_chunks:
+            msg.content = "❌ Информация в документах не найдена."
+            await msg.update()
+
+        # Достаём текст чанков
+        context = "\n\n".join([c[1] for c in context_chunks])
+        doc_id = context_chunks[0][0]
+        sources = [c[2]['путь'] for c in context_chunks]
+        
+        # Генерация ответа
+        async with inference_semaphore:
+            llm_task = loop.run_in_executor(None, ask_llm, message.content, context, chat_history)
+            answer = await run_with_dots(msg, "✍️ Генерирую ответ", llm_task)
+        
+        data_layer = get_data_layer()
+        
+        paths = []
+        files = []
+        for fp in sources:
+            if fp not in paths:
+                try:
+                    display_name = os.path.basename(fp)
+                    ending = display_name[-4::]
+                    link_ = quote(display_name)
+                    if "pdf" in ending or "pptx" in ending:
+                        files.append(f"🔴📃 [{display_name}](/docs/{link_})")
+                        paths.append(fp)
+                    elif "doc" in ending or "docx" in ending or "txt" in ending:
+                        files.append(f"🔵📃 [{display_name}](/docs/{link_})")
+                        paths.append(fp)
+                    else:
+                        files.append(f"🟢📃 [{display_name}](/docs/{link_})")
+                        paths.append(fp)
+
+                except Exception as e:
+                    print(f"❌ Не удалось прикрепить файл {fp}: {e}")
+
+        # Отправка ответа
+        sources_text = "\n".join(f"- {link}" for link in files)
+        end_time = time.time()
+        msg.content=f"{answer}\n\n⌛ Время исполнения запроса: {round(end_time-start_time, 1)} секунд.\n\n📁 Источники:\n{sources_text}"
+        await msg.update()
+
+        timestamp = datetime.now()
+        
+        current_user = cl.user_session.get("user")
+        user_id = current_user.identifier
+
+        context = "\n-----------------------------------------------------------\n".join([c[1] for c in context_chunks])
+        save_chat_history(user_id, doc_id, old_q, rephrased_q, answer, timestamp, sources, context)
+
+    except Exception as e:
+        msg = cl.Message(content="♻️ Обрабатываю запрос...", author="Assistant")
+        msg.content=f"☠️ Произошла ошибка: {str(e)}"
+        await msg.send()
+        
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    pass
+
+@cl.on_chat_end
+def on_chat_end():
+    torch.cuda.empty_cache()

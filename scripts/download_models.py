@@ -1,13 +1,22 @@
+from ntpath import exists
+import os
 import argparse
 from pathlib import Path
+
+import dotenv
 from huggingface_hub import snapshot_download
 
+dotenv.load_dotenv()
+
+PROJECT_PATH = os.environ["PROJECT_PATH"]
 
 EMB_MODEL_ID = "intfloat/multilingual-e5-large-instruct"
 LLM_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 
-DEFAULT_EMB_PATH = "./models/multilingual-e5-large-instruct"
-DEFAULT_LLM_PATH = "./models/Mistral-7B-Instruct-v0.3"
+WEIGHTS_PATH = os.path.join(PROJECT_PATH, "models")
+
+DEFAULT_EMB_PATH = os.path.join(PROJECT_PATH, "models/multilingual-e5-large-instruct")
+DEFAULT_LLM_PATH = os.path.join(PROJECT_PATH, "models/Mistral-7B-Instruct-v0.3")
 
 
 def download_model(repo_id: str, local_dir: str):
@@ -17,7 +26,8 @@ def download_model(repo_id: str, local_dir: str):
         snapshot_download(
             repo_id=repo_id,
             local_dir=local_dir,
-            local_dir_use_symlinks=False
+            local_dir_use_symlinks=False,
+            resume_download=True,
         )
         print(f"✓ Successfully downloaded {repo_id} to {local_dir}")
         return True

@@ -9,6 +9,31 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./init/sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Монтируем модели как volume для возможности обновления без пересборки
+      - ./models:/app/models
+      # Монтируем данные
+      - ./data:/app/data
+      # Монтируем код для разработки (опционально, можно закомментировать для production)
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   db_data:
