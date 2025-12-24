@@ -16,6 +16,11 @@ from chainlit.types import ThreadDict
 import psycopg2
 from starlette.routing import Mount
 from starlette.staticfiles import StaticFiles
+from starlette.responses import JSONResponse
+from starlette.requests import Request
+
+from langchain_ollama import ChatOllama
+
 import torch
 import torch.nn.functional as F
 from transformers import (
@@ -28,9 +33,15 @@ from transformers import (
 # ------------------------
 # Config
 # ------------------------
-DB_CONN = "dbname=postgres user=postgres password=postgres host=77.234.216.102"
-EMB_MODEL_PATH = "/models/multilingual-e5-large-instruct/snapshots/274baa43b0e13e37fafa6428dbc7938e62e5c439"
-LLM_MODEL_PATH = "/models/models--mistralai--Mistral-7B-Instruct-v0.3/snapshots/0d4b76e1efeb5eb6f6b5e757c79870472e04bd3a"
+DB_CONN = (
+    f"dbname={os.environ['POSTGRES_DB']} "
+    f"user={os.environ['POSTGRES_USER']} "
+    f"password={os.environ['POSTGRES_PASSWORD']} "
+    f"host={os.environ['POSTGRES_HOST']}"
+)
+
+EMB_MODEL = "intfloat/multilingual-e5-small"
+
 TOP_K = 9
 
 inference_semaphore = asyncio.Semaphore(1)
@@ -43,18 +54,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
-emb_tokenizer = AutoTokenizer.from_pretrained(EMB_MODEL_PATH)
-emb_model = AutoModel.from_pretrained(EMB_MODEL_PATH).to(device).eval()
+emb_tokenizer = AutoTokenizer.from_pretrained(EMB_MODEL)
+emb_model = AutoModel.from_pretrained(EMB_MODEL).to(device).eval()
 
-llm_tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_PATH, trust_remote_code=True)
-llm_model = AutoModelForCausalLM.from_pretrained(
-    LLM_MODEL_PATH,
-    device_map=device,
-    trust_remote_code=True,
-    quantization_config=quantization_config,
-    #dtype = torch.float16
-).eval()
-llm_model = torch.compile(llm_model)
+
+llm_model = ChatOllama(
+    model="llama4:latest",
+    base_url=os.environ["OLLAMA_BASE_URL"],
+)
 
 # ------------------------
 # DB
@@ -203,30 +210,9 @@ ANSWER:"""
 
     messages = [{"role":"system", "content":system_prompt},{"role":"user", "content":prompt}]
     
-    input_ids = llm_tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True
-    ).to(device)
+    response = llm_model.invoke(messages)
     
-    terminators = [
-        llm_tokenizer.eos_token_id,
-        llm_tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
-    
-    with torch.inference_mode():
-        output = llm_model.generate(
-            **input_ids,
-            max_new_tokens=1024,
-            do_sample=False,
-            eos_token_id=terminators,
-            num_beams=1
-        )
-        
-    generated_tokens = output[0][input_ids["input_ids"].shape[-1]:]    
-    answer = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-    return answer
+    return response.content
 
 def rephrase_question(question, history):
     history_text = "\n".join([f"User: {h['user']}\nAssistant: {h['assistant']}" for h in history])
@@ -248,29 +234,13 @@ Rephrased question:
 """
     messages = [{"role":"system", "content":system_prompt},{"role":"user", "content":prompt}]
 
-    input_ids = llm_tokenizer.apply_chat_template(
+    output = llm_model.invoke(
         messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True
-    ).to(device)
-    
-    terminators = [
-        llm_tokenizer.eos_token_id,
-        llm_tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
-    
-    with torch.inference_mode():
-        output = llm_model.generate(
-            **input_ids,
-            max_new_tokens=300,
-            do_sample=False,
-            eos_token_id=terminators,
-            num_beams=1
-        )
-    
-    generated_tokens = output[0][input_ids["input_ids"].shape[-1]:]    
-    return llm_tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+        max_new_tokens=300,
+        num_beams=1
+    )
+
+    return output.content
 
 # ------------------------
 # Chat history
@@ -321,7 +291,7 @@ def load_chat_history(thread_id: str, max_pairs: int = 20):
 @cl.data_layer
 def get_data_layer():
     return SQLAlchemyDataLayer(
-        conninfo=CHAINLIT_CONN
+        conninfo=DB_CONN
     )
 
 def get_attr(obj, key, default=None):
@@ -333,8 +303,11 @@ def get_attr(obj, key, default=None):
 async def start_chat():
     torch.cuda.empty_cache()
 
+
 @cl.password_auth_callback
-async def on_login(username: str, password: str) -> Optional[cl.User]:
+async def on_login(username: str, password: str) -> cl.User | None:
+    conn = None
+    cur = None
     try:
         conn = psycopg2.connect(DB_CONN)
         cur = conn.cursor()
@@ -345,8 +318,9 @@ async def on_login(username: str, password: str) -> Optional[cl.User]:
             if metadata.get("password") == password:
                 return cl.User(identifier=identifier, display_name=metadata.get("display_name"), metadata={"username":metadata.get("username"), "password":metadata.get("password"), "access":metadata.get("access"), "display_name":metadata.get("display_name")})
     finally:
-        if conn:
+        if cur:
             cur.close()
+        if conn:
             conn.close()
     return None
 
@@ -459,3 +433,4 @@ async def on_chat_resume(thread: ThreadDict):
 @cl.on_chat_end
 def on_chat_end():
     torch.cuda.empty_cache()
+

@@ -16,9 +16,6 @@ RUN uv sync --frozen
 # Копируем код приложения
 COPY app/ ./app/
 
-# Копируем модели (можно также монтировать через volume)
-COPY models/ ./models/
-
 # Создаем директорию для данных
 RUN mkdir -p /app/data
 
@@ -29,5 +26,5 @@ ENV PYTHONPATH=/app
 EXPOSE 8000
 
 # Команда запуска приложения через chainlit
-CMD ["chainlit", "run", "app/app.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "chainlit", "run", "app/app.py", "--host", "0.0.0.0", "--port", "8000"]
 

@@ -20,4 +20,5 @@ dependencies = [
     "psycopg2-binary>=2.9.11",
     "instructor>=1.13.0",
     "deepeval>=3.7.6",
+    "sqlalchemy>=2.0.45",
 ]
