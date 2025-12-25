@@ -1,19 +1,35 @@
+import asyncio
+from datetime import datetime
 import json
+import os
+import time
+
+import dotenv
+import chainlit as cl
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from chainlit.types import ThreadDict
+from langchain_ollama import ChatOllama
 import psycopg2
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, BitsAndBytesConfig
-from datetime import datetime
-from typing import Optional
+from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
 
-
+dotenv.load_dotenv()
 # ------------------------
 # Config
 # ------------------------
-DB_CONN = "dbname=postgres user=postgres password=postgres host=77.234.216.102"
-EMB_MODEL_PATH = "/models/multilingual-e5-large-instruct/snapshots/274baa43b0e13e37fafa6428dbc7938e62e5c439"
-LLM_MODEL_PATH = "/models/models--mistralai--Mistral-7B-Instruct-v0.3/snapshots/0d4b76e1efeb5eb6f6b5e757c79870472e04bd3a"
+DB_CONN = (
+    f"dbname={os.environ['POSTGRES_DB']} "
+    f"user={os.environ['POSTGRES_USER']} "
+    f"password={os.environ['POSTGRES_PASSWORD']} "
+    f"host={os.environ['POSTGRES_HOST']}"
+)
+CHAINLIT_CONN = f"postgresql+asyncpg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}@{os.environ['POSTGRES_HOST']}:{os.environ['POSTGRES_PORT']}/{os.environ['POSTGRES_DB']}"
+EMB_MODEL = "intfloat/multilingual-e5-large"
+
 TOP_K = 9
+
+inference_semaphore = asyncio.Semaphore(1)
 
 # ------------------------
 # Models
@@ -23,18 +39,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
-emb_tokenizer = AutoTokenizer.from_pretrained(EMB_MODEL_PATH)
-emb_model = AutoModel.from_pretrained(EMB_MODEL_PATH).to(device).eval()
+emb_tokenizer = AutoTokenizer.from_pretrained(EMB_MODEL)
+emb_model = AutoModel.from_pretrained(EMB_MODEL).to(device).eval()
 
-llm_tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_PATH, trust_remote_code=True)
-llm_model = AutoModelForCausalLM.from_pretrained(
-    LLM_MODEL_PATH,
-    device_map=device,
-    trust_remote_code=True,
-    quantization_config=quantization_config,
-    #dtype = torch.float16
-).eval()
-llm_model = torch.compile(llm_model)
+
+llm_model = ChatOllama(
+    model="gpt-oss:120b",
+    base_url=os.environ["OLLAMA_BASE_URL"],
+)
 
 # ------------------------
 # DB
@@ -46,6 +58,13 @@ def get_db_connection():
 # Embedding helpers
 # ------------------------
 MAX_LENGTH = 512
+
+# ------------------------
+# app
+# ------------------------
+
+# app.router.routes.insert(0, Mount("/docs", app=StaticFiles(directory=DOCS), name="docs"))
+
 
 def average_pool(last_hidden_states, attention_mask):
     mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_states.size()).float()
@@ -176,32 +195,11 @@ ANSWER:"""
 
     messages = [{"role":"system", "content":system_prompt},{"role":"user", "content":prompt}]
     
-    input_ids = llm_tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True
-    ).to(device)
+    response = llm_model.invoke(messages)
     
-    terminators = [
-        llm_tokenizer.eos_token_id,
-        llm_tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
-    
-    with torch.inference_mode():
-        output = llm_model.generate(
-            **input_ids,
-            max_new_tokens=1024,
-            do_sample=False,
-            eos_token_id=terminators,
-            num_beams=1
-        )
-        
-    generated_tokens = output[0][input_ids["input_ids"].shape[-1]:]    
-    answer = llm_tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-    return answer
+    return response.content
 
-def rephrase_question(question, history):
+def rephrase_question(question, history) -> str:
     history_text = "\n".join([f"User: {h['user']}\nAssistant: {h['assistant']}" for h in history])
 
     system_prompt = """You are a helper for rephrasing search queries. 
@@ -221,29 +219,11 @@ Rephrased question:
 """
     messages = [{"role":"system", "content":system_prompt},{"role":"user", "content":prompt}]
 
-    input_ids = llm_tokenizer.apply_chat_template(
+    output = llm_model.invoke(
         messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True
-    ).to(device)
-    
-    terminators = [
-        llm_tokenizer.eos_token_id,
-        llm_tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
-    
-    with torch.inference_mode():
-        output = llm_model.generate(
-            **input_ids,
-            max_new_tokens=300,
-            do_sample=False,
-            eos_token_id=terminators,
-            num_beams=1
-        )
-    
-    generated_tokens = output[0][input_ids["input_ids"].shape[-1]:]    
-    return llm_tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+    )
+
+    return output.content
 
 # ------------------------
 # Chat history
@@ -251,6 +231,7 @@ Rephrased question:
 def save_chat_history(user_id, arxiv_id, user_msg, rephrased_msg, assistant_msg, timestamp, sources_ids, chunks):
     conn = get_db_connection()
     cur = conn.cursor()
+    sources_ids = json.dumps(sources_ids)
     try:
         cur.execute(
             """
@@ -290,3 +271,142 @@ def load_chat_history(thread_id: str, max_pairs: int = 20):
     finally:
         cur.close()
         conn.close()
+
+
+@cl.data_layer
+def get_data_layer():
+    return SQLAlchemyDataLayer(conninfo=CHAINLIT_CONN)
+
+
+def get_attr(obj, key, default=None):
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+@cl.on_chat_start
+async def start_chat():
+    torch.cuda.empty_cache()
+
+
+@cl.password_auth_callback
+async def on_login(username: str, password: str) -> cl.User | None:
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(DB_CONN)
+        cur = conn.cursor()
+        cur.execute("SELECT id, identifier, metadata FROM users WHERE metadata->>'username' = %s;", (username,))
+        row = cur.fetchone()
+        if row:
+            user_id, identifier, metadata = row
+            if metadata.get("password") == password:
+                return cl.User(identifier=identifier, display_name=metadata.get("display_name"), metadata={"username":metadata.get("username"), "password":metadata.get("password"), "access":metadata.get("access"), "display_name":metadata.get("display_name")})
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+    return None
+
+# ------------------------
+# Chainlit core
+# ------------------------
+async def run_with_dots(
+    message: cl.Message,
+    base_text: str,
+    task: asyncio.Task,
+    dots_interval: float=0.6,
+    max_dots: int=3):
+    dots = ""
+    while not task.done():
+        dots = "." * (len(dots)%max_dots+1)
+        message.content = f"{base_text}{dots}"
+        await message.update()
+        await asyncio.sleep(dots_interval)
+    return await task
+
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    start_time = time.time()
+
+    msg = await cl.Message(content="⌛ Ваш запрос в очереди на исполнение. Пожалуйста, подождите...", author="Assistant").send()
+    thread_id = cl.context.session.thread_id
+    chat_history = load_chat_history(thread_id, max_pairs = 20)
+    print(chat_history)
+    loop = asyncio.get_event_loop()
+
+    try:
+        # Рефразирование вопроса с учетом истории
+        old_q = message.content
+        async with inference_semaphore:
+            if chat_history:
+                rephrase_task = loop.run_in_executor(None, rephrase_question, message.content, chat_history)
+                new_question = await run_with_dots(msg, "♻️ Формирую запрос", rephrase_task)
+                rephrased_q = new_question
+            else:
+                msg.content = "⌛ Ваш запрос в очереди на исполнение. Пожалуйста, подождите..."
+                await msg.update()
+                new_question = message.content
+                rephrased_q = None
+
+        # Поиск релевантного контекста
+        async with inference_semaphore:
+            search_task = loop.run_in_executor(None, search_context, new_question)
+            context_chunks = await run_with_dots(msg, "🔍 Ищу релевантные документы", search_task)
+        if not context_chunks:
+            msg.content = "❌ Информация в документах не найдена."
+            await msg.update()
+
+        # Достаём текст чанков
+        context = "\n\n".join([c[1] for c in context_chunks])
+        doc_id = context_chunks[0][0]
+        sources = [c[0] for c in context_chunks]
+        
+        # Генерация ответа
+        async with inference_semaphore:
+            llm_task = loop.run_in_executor(None, ask_llm, message.content, context, chat_history)
+            answer = await run_with_dots(msg, "✍️ Генерирую ответ", llm_task)
+        
+        data_layer = get_data_layer()
+        
+        paths = []
+        files = []
+        # Предполагаем, что 'sources' — это список arxiv_id
+        for arxiv_id in sources:
+            if arxiv_id not in paths:
+                try:
+                    display_name = arxiv_id
+                    arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
+                    files.append(f"🔗 [arXiv:{display_name}]({arxiv_url})")
+                    paths.append(arxiv_id)
+                except Exception as e:
+                    print(f"❌ Не удалось сформировать ссылку на arXiv для {arxiv_id}: {e}")
+
+        # Отправка ответа
+        sources_text = "\n".join(f"- {link}" for link in files)
+        end_time = time.time()
+        msg.content=f"{answer}\n\n⌛ Время исполнения запроса: {round(end_time-start_time, 1)} секунд.\n\n📁 Источники:\n{sources_text}"
+        await msg.update()
+
+        timestamp = datetime.now()
+        
+        current_user = cl.user_session.get("user")
+        user_id = current_user.identifier
+
+        context = "\n-----------------------------------------------------------\n".join([c[1] for c in context_chunks])
+        save_chat_history(user_id, doc_id, old_q, rephrased_q, answer, timestamp, sources, context)
+
+    except Exception as e:
+        msg = cl.Message(content="♻️ Обрабатываю запрос...", author="Assistant")
+        msg.content=f"☠️ Произошла ошибка: {str(e)}"
+        await msg.send()
+        
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    pass
+
+@cl.on_chat_end
+def on_chat_end():
+    torch.cuda.empty_cache()
+
