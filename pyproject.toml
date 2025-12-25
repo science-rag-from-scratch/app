@@ -21,4 +21,6 @@ dependencies = [
     "instructor>=1.13.0",
     "deepeval>=3.7.6",
     "sqlalchemy>=2.0.45",
+    "asyncpg>=0.31.0",
+    "greenlet>=3.3.0",
 ]

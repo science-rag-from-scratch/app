@@ -1,8 +1,11 @@
 import os
 import psycopg2
+import dotenv
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 import chainlit as cl
 from typing import Optional
+
+dotenv.load_dotenv()
 
 DB_CONN = (
     f"dbname={os.environ['POSTGRES_DB']} "

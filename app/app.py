@@ -3,33 +3,18 @@ from datetime import datetime
 import json
 import os
 import time
-from typing import Optional
-from urllib.parse import quote
-from uuid import uuid4
 
+import dotenv
 import chainlit as cl
-from chainlit.context import context
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from chainlit.element import File
-from chainlit.server import app
 from chainlit.types import ThreadDict
-import psycopg2
-from starlette.routing import Mount
-from starlette.staticfiles import StaticFiles
-from starlette.responses import JSONResponse
-from starlette.requests import Request
-
 from langchain_ollama import ChatOllama
-
+import psycopg2
 import torch
 import torch.nn.functional as F
-from transformers import (
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
+from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
 
+dotenv.load_dotenv()
 # ------------------------
 # Config
 # ------------------------
@@ -39,8 +24,8 @@ DB_CONN = (
     f"password={os.environ['POSTGRES_PASSWORD']} "
     f"host={os.environ['POSTGRES_HOST']}"
 )
-
-EMB_MODEL = "intfloat/multilingual-e5-small"
+CHAINLIT_CONN = f"postgresql+asyncpg://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}@{os.environ['POSTGRES_HOST']}:{os.environ['POSTGRES_PORT']}/{os.environ['POSTGRES_DB']}"
+EMB_MODEL = "intfloat/multilingual-e5-large"
 
 TOP_K = 9
 
@@ -59,7 +44,7 @@ emb_model = AutoModel.from_pretrained(EMB_MODEL).to(device).eval()
 
 
 llm_model = ChatOllama(
-    model="llama4:latest",
+    model="gpt-oss:120b",
     base_url=os.environ["OLLAMA_BASE_URL"],
 )
 
@@ -214,7 +199,7 @@ ANSWER:"""
     
     return response.content
 
-def rephrase_question(question, history):
+def rephrase_question(question, history) -> str:
     history_text = "\n".join([f"User: {h['user']}\nAssistant: {h['assistant']}" for h in history])
 
     system_prompt = """You are a helper for rephrasing search queries. 
@@ -236,8 +221,6 @@ Rephrased question:
 
     output = llm_model.invoke(
         messages,
-        max_new_tokens=300,
-        num_beams=1
     )
 
     return output.content
@@ -248,6 +231,7 @@ Rephrased question:
 def save_chat_history(user_id, arxiv_id, user_msg, rephrased_msg, assistant_msg, timestamp, sources_ids, chunks):
     conn = get_db_connection()
     cur = conn.cursor()
+    sources_ids = json.dumps(sources_ids)
     try:
         cur.execute(
             """
@@ -288,11 +272,11 @@ def load_chat_history(thread_id: str, max_pairs: int = 20):
         cur.close()
         conn.close()
 
+
 @cl.data_layer
 def get_data_layer():
-    return SQLAlchemyDataLayer(
-        conninfo=DB_CONN
-    )
+    return SQLAlchemyDataLayer(conninfo=CHAINLIT_CONN)
+
 
 def get_attr(obj, key, default=None):
     if isinstance(obj, dict):
@@ -377,7 +361,7 @@ async def on_message(message: cl.Message):
         # Достаём текст чанков
         context = "\n\n".join([c[1] for c in context_chunks])
         doc_id = context_chunks[0][0]
-        sources = [c[2]['путь'] for c in context_chunks]
+        sources = [c[0] for c in context_chunks]
         
         # Генерация ответа
         async with inference_semaphore:
@@ -388,24 +372,16 @@ async def on_message(message: cl.Message):
         
         paths = []
         files = []
-        for fp in sources:
-            if fp not in paths:
+        # Предполагаем, что 'sources' — это список arxiv_id
+        for arxiv_id in sources:
+            if arxiv_id not in paths:
                 try:
-                    display_name = os.path.basename(fp)
-                    ending = display_name[-4::]
-                    link_ = quote(display_name)
-                    if "pdf" in ending or "pptx" in ending:
-                        files.append(f"🔴📃 [{display_name}](/docs/{link_})")
-                        paths.append(fp)
-                    elif "doc" in ending or "docx" in ending or "txt" in ending:
-                        files.append(f"🔵📃 [{display_name}](/docs/{link_})")
-                        paths.append(fp)
-                    else:
-                        files.append(f"🟢📃 [{display_name}](/docs/{link_})")
-                        paths.append(fp)
-
+                    display_name = arxiv_id
+                    arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
+                    files.append(f"🔗 [arXiv:{display_name}]({arxiv_url})")
+                    paths.append(arxiv_id)
                 except Exception as e:
-                    print(f"❌ Не удалось прикрепить файл {fp}: {e}")
+                    print(f"❌ Не удалось сформировать ссылку на arXiv для {arxiv_id}: {e}")
 
         # Отправка ответа
         sources_text = "\n".join(f"- {link}" for link in files)
