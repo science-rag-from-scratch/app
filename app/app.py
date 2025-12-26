@@ -44,7 +44,7 @@ emb_model = AutoModel.from_pretrained(EMB_MODEL).to(device).eval()
 
 
 llm_model = ChatOllama(
-    model="gpt-oss:120b",
+    model="llama4:latest",
     base_url=os.environ["OLLAMA_BASE_URL"],
 )
 

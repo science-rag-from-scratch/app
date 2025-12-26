@@ -23,4 +23,5 @@ dependencies = [
     "sqlalchemy>=2.0.45",
     "asyncpg>=0.31.0",
     "greenlet>=3.3.0",
+    "google-genai>=1.56.0",
 ]

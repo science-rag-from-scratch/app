@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Any
-
+import dotenv
 from deepeval import evaluate
 from deepeval.evaluate import AsyncConfig
 from deepeval.metrics import (
@@ -11,25 +11,32 @@ from deepeval.metrics import (
     ContextualRelevancyMetric,
     FaithfulnessMetric,
 )
-from deepeval.models import OllamaModel
+from deepeval.models import GeminiModel, OllamaModel
 from deepeval.test_case import LLMTestCase
 from langchain_ollama import ChatOllama
-
+from tqdm import tqdm
 from app.app import rephrase_question, search_context, ask_llm
 
+dotenv.load_dotenv()
+
 chat1 = ChatOllama(
-    model="gpt-oss:120b",
-    base_url="https://aicltr.itmo.ru/ollama",
+    model="llama4:latest",
+    base_url=os.environ["OLLAMA_BASE_URL"],
     temperature=0,
 )
 # Импортируйте класс OllamaModel из DeepEval
-os.environ["DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE"] = "120"
+os.environ["DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE"] = "360"
 
 evaluation_model = OllamaModel(
-    model="llama4:latest",
-    base_url="https://aicltr.itmo.ru/ollama",
+    model="gpt-oss:120b",
+    base_url="https://aicltr.itmo.ru/ollama/",
     temperature=0,  #
 )
+
+# evaluation_model = GeminiModel(
+#     model="gemini-3-flash-preview",
+#     api_key=os.environ["GEMINI_API_KEY"],
+# )
 
 
 def load_local_dataset(filepath: str) -> list[dict[str, Any]]:
@@ -137,35 +144,30 @@ def main(force: bool = False):
         return
 
     print(f"2. Запуск оценки {len(test_cases)} тест-кейсов через Ollama...")
-
-    results = evaluate(
-        test_cases=test_cases,
-        metrics=[
-            contextual_relevancy,
-            contextual_precision,
-            contextual_recall,
-            answer_relevancy,
-            faithfulness
-        ],  
-        async_config=AsyncConfig(
-            run_async=False,
-            throttle_value=1,
-            max_concurrent=5,
-
+    
+    results = []
+    for test_case in tqdm(test_cases[5::]):
+        result = evaluate(
+            test_cases=[test_case],
+            metrics=[
+                contextual_relevancy,
+                contextual_precision,
+                contextual_recall,
+                answer_relevancy,
+                faithfulness
+            ],
+            async_config=AsyncConfig(
+                run_async=False,
+                throttle_value=3,
+                max_concurrent=3,
+            )
         )
-    )
-
-    output_data = []
-    for tc in test_cases:
-        output_data.append({
-            "query": tc.input,
-            "model_answer": tc.actual_output,
-            "ground_truth": tc.expected_output,
-            "retrieval_context": tc.retrieval_context
-        })
+        results.append(
+            result.model_dump()
+        )
 
     with open("rag_ollama_evaluation.json", "w", encoding="utf-8") as f:
-        json.dump(output_data, f, ensure_ascii=False, indent=2)
+        json.dump(results, f, ensure_ascii=False, indent=2)
     print("3. Детали сохранены в 'rag_ollama_evaluation.json'")
 
 if __name__ == "__main__":
