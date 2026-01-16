@@ -16,6 +16,7 @@ from deepeval.test_case import LLMTestCase
 from langchain_ollama import ChatOllama
 from tqdm import tqdm
 from app.app import rephrase_question, search_context, ask_llm
+import tenacity
 
 dotenv.load_dotenv()
 
@@ -25,10 +26,10 @@ chat1 = ChatOllama(
     temperature=0,
 )
 # Импортируйте класс OllamaModel из DeepEval
-os.environ["DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE"] = "360"
+os.environ["DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE"] = "480"
 
 evaluation_model = OllamaModel(
-    model="gpt-oss:120b",
+    model="llama4:latest",
     base_url="https://aicltr.itmo.ru/ollama/",
     temperature=0,  #
 )
@@ -120,6 +121,28 @@ def create_test_cases(dataset_path: str) -> list[LLMTestCase]:
 
     return test_cases
 
+
+@tenacity.retry(
+    stop=tenacity.stop_after_attempt(5),
+    wait=tenacity.wait_exponential(multiplier=1, min=4, max=15),
+)
+def evaluate_case(test_case):
+    return evaluate(
+            test_cases=[test_case],
+            metrics=[
+                contextual_relevancy,
+                contextual_precision,
+                contextual_recall,
+                answer_relevancy,
+                faithfulness
+            ],
+            async_config=AsyncConfig(
+                run_async=False,
+                throttle_value=3,
+                max_concurrent=3,
+            )
+        )
+
 def main(force: bool = False):
     dataset_path = "tests/test_dataset.json"
     if not force and os.path.exists("rag_ollama_model_answers.json"):
@@ -146,28 +169,15 @@ def main(force: bool = False):
     print(f"2. Запуск оценки {len(test_cases)} тест-кейсов через Ollama...")
     
     results = []
-    for test_case in tqdm(test_cases[5::]):
-        result = evaluate(
-            test_cases=[test_case],
-            metrics=[
-                contextual_relevancy,
-                contextual_precision,
-                contextual_recall,
-                answer_relevancy,
-                faithfulness
-            ],
-            async_config=AsyncConfig(
-                run_async=False,
-                throttle_value=3,
-                max_concurrent=3,
-            )
-        )
-        results.append(
-            result.model_dump()
-        )
+    for test_case in tqdm(test_cases):
+        result = evaluate_case(test_case)
+        dump = result.model_dump()
+        results.append(dump)
+        print(dump)
 
     with open("rag_ollama_evaluation.json", "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+
     print("3. Детали сохранены в 'rag_ollama_evaluation.json'")
 
 if __name__ == "__main__":
